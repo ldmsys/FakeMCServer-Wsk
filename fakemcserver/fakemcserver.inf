@@ -1,0 +1,77 @@
+;
+; fakemcserver.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System ; TODO: specify appropriate Class
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318} ; TODO: specify appropriate ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=fakemcserver.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+fakemcserver_Device_CoInstaller_CopyFiles = 11
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+fakemcserver.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%fakemcserver.DeviceDesc%=fakemcserver_Device, Root\fakemcserver ; TODO: edit hw-id
+
+[fakemcserver_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+fakemcserver.sys
+
+;-------------- Service installation
+[fakemcserver_Device.NT.Services]
+AddService = fakemcserver,%SPSVCINST_ASSOCSERVICE%, fakemcserver_Service_Inst
+
+; -------------- fakemcserver driver install sections
+[fakemcserver_Service_Inst]
+DisplayName    = %fakemcserver.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\fakemcserver.sys
+
+;
+;--- fakemcserver_Device Coinstaller installation ------
+;
+
+[fakemcserver_Device.NT.CoInstallers]
+AddReg=fakemcserver_Device_CoInstaller_AddReg
+CopyFiles=fakemcserver_Device_CoInstaller_CopyFiles
+
+[fakemcserver_Device_CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+
+[fakemcserver_Device_CoInstaller_CopyFiles]
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+
+[fakemcserver_Device.NT.Wdf]
+KmdfService =  fakemcserver, fakemcserver_wdfsect
+[fakemcserver_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+DiskName = "fakemcserver Installation Disk"
+fakemcserver.DeviceDesc = "fakemcserver Device"
+fakemcserver.SVCDESC = "fakemcserver Service"
