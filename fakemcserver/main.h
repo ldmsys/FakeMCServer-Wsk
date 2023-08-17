@@ -32,8 +32,9 @@ UINT64 htonll(UINT64 value)
 
 #if 1
 NTSTATUS WskMinecraftIRPComp(PDEVICE_OBJECT unused, PIRP irp, PVOID context) {
+    //__debugbreak();
     UNREFERENCED_PARAMETER(unused); UNREFERENCED_PARAMETER(irp);
-    KeSetEvent((PRKEVENT)context, 2, FALSE);
+    if(context) KeSetEvent((PRKEVENT)context, 2, FALSE);
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
@@ -43,6 +44,7 @@ VOID WskMinecraftPrepareAwaitIRP(PIRP irp, PRKEVENT _event) {
 
 NTSTATUS WskMinecraftAwaitIRP(PIRP irp, PRKEVENT _event) {
     KeWaitForSingleObject(_event, Executive, KernelMode, FALSE, NULL);
+    if (!irp) return STATUS_UNSUCCESSFUL;
     return irp->IoStatus.Status;
 }
 #else
@@ -68,7 +70,7 @@ SOCKADDR_IN6 ListenAddress = {AF_INET6,
 
 
 VOID NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject);
-NTSTATUS NTAPI PacketHandler(PWSK_SOCKET ListeningSocket);
+NTSTATUS NTAPI PacketHandler(PVOID ctx);
 NTSTATUS WSKAPI WskMinecraftAcceptEvent(
     _In_ PVOID SocketContext,
     _In_  ULONG         Flags,
@@ -78,6 +80,11 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
     _Outptr_result_maybenull_ PVOID* AcceptSocketContext,
     _Outptr_result_maybenull_ CONST WSK_CLIENT_CONNECTION_DISPATCH** AcceptSocketDispatch
 );
+
+PKEVENT WskMinecraftSocketBrokerEvent;
+int WskMinecraftSocketBrokerType;
+PWSK_SOCKET WskMinecraftSocketBrokerSocket;
+VOID WskMinecraftSocketBroker(PVOID ctx);
 
 const WSK_CLIENT_LISTEN_DISPATCH WskMinecraftClientListenDispatch = {
     WskMinecraftAcceptEvent,

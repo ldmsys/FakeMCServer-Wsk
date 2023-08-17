@@ -31,12 +31,31 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return status;
 	}
 
-	KEVENT evt;
+	PKEVENT _evt;
+	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
 	PIRP irp = IoAllocateIrp(1, FALSE);
 	if (!irp) {
 		return STATUS_INSUFFICIENT_RESOURCES;
 	}
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
+
+	WSK_EVENT_CALLBACK_CONTROL callbackControl;
+	callbackControl.NpiId = (PNPIID)&NPI_WSK_INTERFACE_ID;
+	callbackControl.EventMask = WSK_EVENT_ACCEPT;
+	status = wskProviderNpi.Dispatch->WskControlClient(
+		wskProviderNpi.Client,
+		WSK_SET_STATIC_EVENT_CALLBACKS,
+		sizeof(callbackControl),
+		&callbackControl,
+		0, NULL, NULL,
+		NULL
+	);
+
+	if (!NT_SUCCESS(status)) {
+		return status;
+	}
 
 	// Fetch WskSocket
 	wskProviderNpi.Dispatch->WskSocket(wskProviderNpi.Client,
@@ -49,10 +68,9 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		NULL, NULL, NULL,
 		irp);
 	
-	status = WskMinecraftAwaitIRP(irp, &evt);
+	status = WskMinecraftAwaitIRP(irp, _evt);
 	
 	if (!NT_SUCCESS(status)) {
-		WskDeregister(&WskMinecraftRegistration);
 		return status;
 	}
 
@@ -60,7 +78,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	// Set IPv6 Only to False
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
 	int zero = 0;
 
 	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskControlSocket(
@@ -73,113 +91,86 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		0, NULL, NULL, irp
 	);
 
-	status = WskMinecraftAwaitIRP(irp, &evt);
+	status = WskMinecraftAwaitIRP(irp, _evt);
 
 	if (!NT_SUCCESS(status)) {
-		WskDeregister(&WskMinecraftRegistration);
 		return status;
 	}
 
 	// Bind & Listen
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
 	
 	status = ((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskBind(
 		WskMinecraftListeningSocket, (PSOCKADDR)&ListenAddress, 0, irp
 	);
 
-	status = WskMinecraftAwaitIRP(irp, &evt);
+	status = WskMinecraftAwaitIRP(irp, _evt);
 	ASSERT(NT_SUCCESS(status));
 
 	if (!NT_SUCCESS(status)) {
-		WskDeregister(&WskMinecraftRegistration);
 		return status;
 	}
 
-
-
-	PacketHandler(WskMinecraftListeningSocket); // fixme: Should be async
-
+	HANDLE unused;
+	PsCreateSystemThread(&unused, THREAD_ALL_ACCESS, NULL, NULL, NULL, WskMinecraftSocketBroker, NULL);
 
 	IoFreeIrp(irp);
+	ExFreePoolWithTag(_evt, 'enim');
 	DriverObject->DriverUnload = UnloadHandler;
 	return status;
 }
 
-NTSTATUS NTAPI PacketHandler(PWSK_SOCKET ListeningSocket) {
-	PWSK_PROVIDER_LISTEN_DISPATCH ListenDispatch;
-	SOCKADDR LocalAddress, RemoteAddress;
-	KEVENT evt;
+VOID WskMinecraftSocketBroker(PVOID ctx) {
+	UNREFERENCED_PARAMETER(ctx);
+	HANDLE unused;
 	PIRP irp = IoAllocateIrp(1, FALSE);
-	if (!irp) {
-		return STATUS_INSUFFICIENT_RESOURCES; // Better safe than sorry
+	WskMinecraftSocketBrokerEvent = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!WskMinecraftSocketBrokerEvent || !irp) return;
+	KeInitializeEvent(WskMinecraftSocketBrokerEvent, SynchronizationEvent, FALSE);
+
+	while (TRUE) {
+		KeWaitForSingleObject(WskMinecraftSocketBrokerEvent, Executive, KernelMode, FALSE, NULL);
+		if (WskMinecraftSocketBrokerSocket == NULL) break;
+		else {
+			if(WskMinecraftSocketBrokerType == 0) // Create Thread
+				PsCreateSystemThread(&unused, THREAD_ALL_ACCESS, NULL, NULL, NULL, PacketHandler, WskMinecraftSocketBrokerSocket);
+			else if (WskMinecraftSocketBrokerType == 1) { // Graceful Disconnect
+				((PWSK_PROVIDER_CONNECTION_DISPATCH)WskMinecraftSocketBrokerSocket->Dispatch)->WskDisconnect(
+					WskMinecraftSocketBrokerSocket,
+					NULL,
+					0,
+					irp
+				);
+				IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
+			}
+			else if (WskMinecraftSocketBrokerType == 2) { // Close Socket
+				((PWSK_PROVIDER_CONNECTION_DISPATCH)WskMinecraftSocketBrokerSocket->Dispatch)->WskCloseSocket(
+					WskMinecraftSocketBrokerSocket,
+					irp
+				);
+				IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
+			}
+		}
 	}
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
-	ListenDispatch = (PWSK_PROVIDER_LISTEN_DISPATCH)(ListeningSocket->Dispatch);
-
-	ListenDispatch->WskAccept(ListeningSocket, 0, NULL, NULL, &LocalAddress, &RemoteAddress, irp);
-	NTSTATUS status = WskMinecraftAwaitIRP(irp, &evt);
-	
-	ASSERT(NT_SUCCESS(status));
-	if (!NT_SUCCESS(status)) {
-		return status;
-	}
-	
-	PWSK_SOCKET AcceptSocket = (PWSK_SOCKET)irp->IoStatus.Information;
-
-	__debugbreak();
-	if (!AcceptSocket) return STATUS_REQUEST_NOT_ACCEPTED;
-
-	char HelloWorld[] = "HTTP/1.1 200 OK\r\n\r\nHello, World!\r\n";
-
-	status = STATUS_SUCCESS;
-	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
-	WSK_BUF buftest;
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
-
-	buftest.Offset = 0;
-	buftest.Length = strlen(HelloWorld);
-	buftest.Mdl = IoAllocateMdl(HelloWorld, (ULONG)buftest.Length, FALSE, FALSE, NULL); // Because status for IRP couldn't checked
-
-
-	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskSend(
-		AcceptSocket,
-		&buftest,
-		0,
-		irp
-	);
-
-	status = WskMinecraftAwaitIRP(irp, &evt);
-
-	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
-
-	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskCloseSocket(
-		AcceptSocket,
-		irp
-	); WskMinecraftAwaitIRP(irp, &evt);
-	// According to MS docs, WskCloseSocket never fail, so we won't trace irp.
-
-	IoFreeIrp(irp);
-
-	return STATUS_SUCCESS;
 }
+
 
 VOID NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
 	// TODO: Clean-up 
 
-	KEVENT evt;
+	//KEVENT evt;
 	PIRP irp = IoAllocateIrp(1, FALSE);
 	if (!irp) {
 		return; STATUS_INSUFFICIENT_RESOURCES;
 	}
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
+	//WskMinecraftPrepareAwaitIRP(irp, &evt);
 
 	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskCloseSocket
 	(WskMinecraftListeningSocket, irp);
 
-	WskMinecraftAwaitIRP(irp, &evt);
+	//WskMinecraftAwaitIRP(irp, &evt);
 	WskDeregister(&WskMinecraftRegistration);
 
 }
@@ -194,32 +185,57 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 	_Outptr_result_maybenull_ PVOID* AcceptSocketContext,
 	_Outptr_result_maybenull_ CONST WSK_CLIENT_CONNECTION_DISPATCH** AcceptSocketDispatch
 ) {
-	KeBugCheckEx(0xC8C8C8C8, 0, 0, 0, 0);
-	return STATUS_UNSUCCESSFUL;
+	//KeBugCheckEx(0xC8C8C8C8, 0, 0, 0, 0);
+	//return STATUS_UNSUCCESSFUL;
 	SocketContext, Flags, LocalAddress, RemoteAddress, AcceptSocket, AcceptSocketContext, AcceptSocketDispatch;
 
 	UNREFERENCED_PARAMETER(SocketContext); // Since we are passed it as NULL
 	UNREFERENCED_PARAMETER(Flags), LocalAddress;
 
-	__debugbreak();
-	if (!AcceptSocket) return STATUS_REQUEST_NOT_ACCEPTED;
+	if (!AcceptSocket) { 
+		PIRP irp = IoAllocateIrp(1, FALSE);
+		((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskCloseSocket
+		(WskMinecraftListeningSocket, irp);
+		IoFreeIrp(irp);
+		return STATUS_REQUEST_NOT_ACCEPTED;
+	}
 
-	char HelloWorld[] = "HTTP/1.1 200 OK\r\n\r\nHello, World!\r\n";
+	//PsCreateSystemThread(&threadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, PacketHandler, AcceptSocket);
+	__debugbreak();
+	WskMinecraftSocketBrokerType = 0;
+	WskMinecraftSocketBrokerSocket = AcceptSocket;
+	KeSetEvent(WskMinecraftSocketBrokerEvent, 2, FALSE);
+	AcceptSocketContext = AcceptSocketDispatch = NULL;
+	return STATUS_SUCCESS; // Nakdonggang river Duck Egg
+}
+
+NTSTATUS NTAPI PacketHandler(PVOID ctx) {
+	LARGE_INTEGER _1000;
+	_1000.QuadPart = 1000;
+	KeDelayExecutionThread(KernelMode, FALSE, &_1000);
+	__debugbreak();
+	__debugbreak();
+	__debugbreak();
+	PWSK_SOCKET AcceptSocket = ctx;
+	char HelloWorld[] = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nHello, World!\r\n";
 
 	NTSTATUS status = STATUS_SUCCESS;
-	KEVENT evt;
+	PKEVENT _evt;
+	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
 	PIRP irp = IoAllocateIrp(1, FALSE);
 	WSK_BUF buftest;
 	if (!irp) {
 		return STATUS_INSUFFICIENT_RESOURCES; // Better safe than sorry
 	}
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
 
 	buftest.Offset = 0;
-	buftest.Length = strlen(HelloWorld);
+	buftest.Length = sizeof(HelloWorld)-1;
 	buftest.Mdl = IoAllocateMdl(HelloWorld, (ULONG)buftest.Length, FALSE, FALSE, NULL); // Because status for IRP couldn't checked
+	MmProbeAndLockPages(buftest.Mdl, KernelMode, IoWriteAccess);
 
-	
 	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskSend(
 		AcceptSocket,
 		&buftest,
@@ -227,20 +243,24 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 		irp
 	);
 
-	status = WskMinecraftAwaitIRP(irp, &evt);
-
+	status = WskMinecraftAwaitIRP(irp, _evt);
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
-	WskMinecraftPrepareAwaitIRP(irp, &evt);
-	
-	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskCloseSocket(
+
+	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskDisconnect(
 		AcceptSocket,
+		NULL,
+		0,
 		irp
-	); WskMinecraftAwaitIRP(irp, &evt);
+	);
+	WskMinecraftSocketBrokerType = 2;
+	WskMinecraftSocketBrokerSocket = AcceptSocket;
+	KeSetEvent(WskMinecraftSocketBrokerEvent, 2, FALSE);
 	// According to MS docs, WskCloseSocket never fail, so we won't trace irp.
 
 	IoFreeIrp(irp);
-	AcceptSocketContext = AcceptSocketDispatch = NULL;
+	ExFreePoolWithTag(_evt, 'enim');
 	return status;
+
 }
 
 //NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET sock, )
