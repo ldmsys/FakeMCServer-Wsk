@@ -54,6 +54,8 @@ typedef struct _IOVEC {
 
 NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt);
 int NTAPI WskMinecraftRecv(PWSK_SOCKET socket, PVOID buf, size_t len, ULONG Flags);
+int ConnectionCount = 0;
+#define MAXIMUM_CLIENT 100
 
 PWSK_REGISTRATION WskMinecraftRegistration;
 PWSK_SOCKET WskMinecraftListeningSocket;

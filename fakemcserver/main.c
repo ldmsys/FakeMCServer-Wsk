@@ -217,6 +217,8 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 		IoFreeIrp(irp);
 		return STATUS_REQUEST_NOT_ACCEPTED;
 	}
+	if (ConnectionCount > MAXIMUM_CLIENT)
+		return STATUS_REQUEST_NOT_ACCEPTED;
 
 	//PsCreateSystemThread(&threadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, PacketHandler, AcceptSocket);
 	WskMinecraftSocketBrokerSocket = AcceptSocket;
@@ -323,7 +325,7 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
 	
 
-
+	ConnectionCount++;
 	int yes = 1;
 
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
@@ -495,5 +497,6 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 
 	IoFreeIrp(irp);
 	ExFreePoolWithTag(_evt, 'enim');
+	ConnectionCount--;
 	return status;
 }
