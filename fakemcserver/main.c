@@ -192,7 +192,7 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 	return STATUS_SUCCESS; // Nakdonggang river Duck Egg
 }
 
-NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt) {
+NTSTATUS NTAPI WskMinecraftWriteV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt) {
 	size_t mergedSize = 0;
 	WSK_BUF actuallySends;
 	unsigned char* buf_data;
@@ -286,12 +286,13 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	if (!irp) return STATUS_INSUFFICIENT_RESOURCES;
 	PKEVENT _evt;
 	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
-	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
 	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
+	
 
 	/********************************/
 	//__debugbreak();
-	char m[1024];
+	/*char m[1024];
 	int nbytes = WskMinecraftRecv(AcceptSocket, m, 1024, 0);
 	DbgPrint("%d",nbytes);
 
@@ -300,7 +301,115 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	test[0].iov_len = sizeof(HelloWorld) - 1;
 	test[0].iov_base = HelloWorld;
 
-	status = WskMinecraftSendV(AcceptSocket, test, 1);
+	status = WskMinecraftWriteV(AcceptSocket, test, 1);*/
+
+	unsigned char buf[MTU], returnbuf[MTU], yebibuf[MTU];
+	int n, dn, mode, expected_packet_size, keepalivecounter, yebiopt;
+	n = dn = mode = expected_packet_size = keepalivecounter = yebiopt = 0;
+	IOVEC vec[10];
+	while (TRUE) {
+		if (yebiopt) {
+			PRINTF_DEBUG("Restoring from yebi! %d\n", yebiopt);
+			n = yebiopt;
+			memset(&buf, 0, MTU);
+			memcpy(buf, yebibuf, yebiopt);
+			yebiopt = 0;
+		}
+		else {
+			PRINTF_DEBUG("Reading... %d\n", mode);
+			dn = WskMinecraftRecv(AcceptSocket, buf + n, 1500 - n, 0);
+			if (dn <= 0) break;
+			n += dn;
+			PRINTF_DEBUG("Read! +%d=%d\n", dn, n);
+		}
+
+		if (expected_packet_size == 0) {
+			expected_packet_size = varintToint(buf);
+			PRINTF_DEBUG("Expected packet size: %d\n", expected_packet_size);
+		}
+		if (expected_packet_size == 0) continue;
+	
+		if (n < expected_packet_size + varintSize(buf)) {
+			PRINTF_DEBUG("Johnbeo! %d < %d\n", n, expected_packet_size + varintSize(buf));
+			continue;
+		}
+		else if (n > expected_packet_size + varintSize(buf)) {
+			PRINTF_DEBUG("Moving! %d > %d\n", n, expected_packet_size + varintSize(buf));
+			memset(yebibuf, 0, MTU);
+			memcpy(yebibuf, buf + expected_packet_size + varintSize(buf), n - expected_packet_size);
+			yebiopt = n - expected_packet_size - (int)varintSize(buf);
+			n = expected_packet_size + (int)varintSize(buf);
+		}
+
+		memset(returnbuf, 0, MTU);
+		unsigned char packetID = buf[varintSize(buf)];
+		PRINTF_DEBUG("Packet done! %x %x %x %x %x (%d)\n", buf[0], buf[1], buf[2], buf[3], buf[4], varintSize(buf));
+		if (mode == 0) { // pre-handshaking
+			//int protocol = varintToint(buf + varintSize(buf) + 1);
+			mode = buf[expected_packet_size]; // new mode
+			PRINTF_DEBUG("Handshaking! %d\n", mode);
+			if (packetID != 0 || mode > 2 || mode == 0) {
+				// Undefined behavior
+				PRINTF_DEBUG("Undefined behavior! %d %d\n", packetID, mode);
+				break;
+			}
+		}
+		else if (mode == 1) { // Ping Mode
+			PRINTF_DEBUG("Ping Mode!\n");
+			if (packetID == 0) { // MOTD Request
+				char* json = "{\"version\": {\"name\": \"ldmsys 1.12.2\", \"protocol\":340},\"players\":{\"max\":99999,\"online\": 0,\"sample\":[]},\"description\":{\"text\": \"§b§lFakeMCServer Test\"}}";
+				//char* packedJSON = (char*)malloc(strlen(json) + 6);
+				char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(json) + 6, 'enim');
+				if (!packedJSON) break;
+				unsigned char _packetID = 0x00;
+
+				vec[1].iov_base = &_packetID;
+				vec[1].iov_len = 1;
+				vec[2].iov_base = packedJSON;
+				vec[2].iov_len = appendLengthvarint(json, strlen(json), packedJSON);
+
+				size_t payloadsize = 0;
+				for (int i = 1;i <= 2;i++) {
+					payloadsize += vec[i].iov_len;
+				}
+				unsigned char payloadsize_varint[4];
+				vec[0].iov_base = payloadsize_varint;
+				vec[0].iov_len = intTovarint((int)payloadsize, payloadsize_varint);
+
+				WskMinecraftWriteV(AcceptSocket, vec, 3);
+				ExFreePoolWithTag(packedJSON, 'enim');
+			}
+		}
+		else if (mode == 2) {
+			if (!packetID == 0) {
+				PRINTF_DEBUG("Undefined behavior! %d %d\n", packetID, mode);
+				break;
+			}
+			char* json = "{\"text\": \"You are not white-listed on this server!\"}";
+
+			//char* packedJSON = (char*)malloc(strlen(json) + 6);
+			char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(json) + 6, 'enim');
+			if (!packedJSON) break;
+			unsigned char _packetID = 0x00;
+
+			vec[1].iov_base = &_packetID;
+			vec[1].iov_len = 1;
+			vec[2].iov_base = packedJSON;
+			vec[2].iov_len = appendLengthvarint(json, strlen(json), packedJSON);
+
+			size_t payloadsize = 0;
+			for (int i = 1;i < 3;i++) {
+				payloadsize += vec[i].iov_len;
+			}
+			unsigned char payloadsize_varint[4];
+			vec[0].iov_base = payloadsize_varint;
+			vec[0].iov_len = intTovarint((int)payloadsize, payloadsize_varint);
+
+			WskMinecraftWriteV(AcceptSocket, vec, 3);
+			ExFreePoolWithTag(packedJSON, 'enim');
+		}
+	}
+	
 
 	/********************************/
 	WskMinecraftPrepareAwaitIRP(irp, _evt);

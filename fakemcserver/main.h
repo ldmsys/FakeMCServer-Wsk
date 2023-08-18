@@ -141,4 +141,6 @@ size_t appendLengthvarint(char* string, size_t length, char* mcstring) {
 
     return headerlen + length;
 }
+#define PRINTF_DEBUG DbgPrint
+#define MTU 1500
 #pragma endregion("Real Minecraft")
