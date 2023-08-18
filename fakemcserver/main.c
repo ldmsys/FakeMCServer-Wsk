@@ -192,41 +192,117 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 	return STATUS_SUCCESS; // Nakdonggang river Duck Egg
 }
 
+NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt) {
+	size_t mergedSize = 0;
+	WSK_BUF actuallySends;
+	unsigned char* buf_data;
+	NTSTATUS status;
+	PIRP irp = IoAllocateIrp(1, FALSE);
+	if (!irp) return STATUS_INSUFFICIENT_RESOURCES;
+	PKEVENT _evt;
+	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
+
+	for (int i = 0;i < iovcnt;i++)
+		mergedSize += iov[i].iov_len;
+	buf_data = ExAllocatePoolZero(NonPagedPool, mergedSize, 'pmet');
+	if (!buf_data) return STATUS_INSUFFICIENT_RESOURCES;
+	mergedSize = 0;
+	for (int i = 0;i < iovcnt;i++) {
+		memcpy(buf_data + mergedSize, iov[i].iov_base, iov[i].iov_len);
+		mergedSize += iov[i].iov_len;
+	}
+
+	actuallySends.Offset = 0;
+	actuallySends.Length = mergedSize;
+	actuallySends.Mdl = IoAllocateMdl(buf_data, (ULONG)mergedSize, FALSE, FALSE, NULL);
+	MmProbeAndLockPages(actuallySends.Mdl, KernelMode, IoWriteAccess);
+
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
+	((PWSK_PROVIDER_CONNECTION_DISPATCH)socket->Dispatch)->WskSend(
+		socket,
+		&actuallySends,
+		0,
+		irp
+	);
+
+	MmUnlockPages(actuallySends.Mdl);
+	status = WskMinecraftAwaitIRP(irp, _evt);
+
+	IoFreeMdl(actuallySends.Mdl);
+	IoFreeIrp(irp);
+	ExFreePoolWithTag(_evt, 'enim');
+	ExFreePoolWithTag(buf_data, 'pmet');
+
+	return -!!(NT_SUCCESS(status));
+}
+
+int NTAPI WskMinecraftRecv(PWSK_SOCKET socket, PVOID buf, size_t len, ULONG Flags) {
+	PIRP irp = IoAllocateIrp(1, FALSE);
+	if (!irp) return STATUS_INSUFFICIENT_RESOURCES;
+	WSK_BUF bufwrapper;
+	PKEVENT _evt;
+	int received_bytes = 0;
+	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
+	NTSTATUS status;
+
+	bufwrapper.Offset = 0;
+	bufwrapper.Length = len;
+	bufwrapper.Mdl = IoAllocateMdl(buf, (ULONG)len, FALSE, FALSE, NULL);
+	MmProbeAndLockPages(bufwrapper.Mdl, KernelMode, IoWriteAccess);
+
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
+	((PWSK_PROVIDER_CONNECTION_DISPATCH)socket->Dispatch)->WskReceive(
+		socket,
+		&bufwrapper,
+		Flags,
+		irp
+	);
+
+	MmUnlockPages(bufwrapper.Mdl);
+	status = WskMinecraftAwaitIRP(irp, _evt);
+
+	if (NT_SUCCESS(status)) {
+		received_bytes = (int)irp->IoStatus.Information;
+	}
+
+	IoFreeMdl(bufwrapper.Mdl);
+	IoFreeIrp(irp);
+	ExFreePoolWithTag(_evt, 'enim');
+
+	return NT_SUCCESS(status) ? received_bytes : -1;
+}
+
 NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	LARGE_INTEGER _1000;
 	_1000.QuadPart = 1000;
 	KeDelayExecutionThread(KernelMode, FALSE, &_1000);
 	PWSK_SOCKET AcceptSocket = ctx;
-	char HelloWorld[] = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nHello, World!\r\n";
-
-	NTSTATUS status = STATUS_SUCCESS;
+	NTSTATUS status;
+	PIRP irp = IoAllocateIrp(1, FALSE);
+	if (!irp) return STATUS_INSUFFICIENT_RESOURCES;
 	PKEVENT _evt;
 	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
-	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
 	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
-	PIRP irp = IoAllocateIrp(1, FALSE);
-	WSK_BUF buftest;
-	if (!irp) {
-		return STATUS_INSUFFICIENT_RESOURCES; // Better safe than sorry
-	}
-	WskMinecraftPrepareAwaitIRP(irp, _evt);
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
 
-	buftest.Offset = 0;
-	buftest.Length = sizeof(HelloWorld)-1;
-	buftest.Mdl = IoAllocateMdl(HelloWorld, (ULONG)buftest.Length, FALSE, FALSE, NULL); // Because status for IRP couldn't checked
-	MmProbeAndLockPages(buftest.Mdl, KernelMode, IoWriteAccess);
+	/********************************/
+	//__debugbreak();
+	char m[1024];
+	int nbytes = WskMinecraftRecv(AcceptSocket, m, 1024, 0);
+	DbgPrint("%d",nbytes);
 
-	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskSend(
-		AcceptSocket,
-		&buftest,
-		0,
-		irp
-	);
+	char HelloWorld[] = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nHello, World!\r\n";
+	IOVEC test[2];
+	test[0].iov_len = sizeof(HelloWorld) - 1;
+	test[0].iov_base = HelloWorld;
 
-	status = WskMinecraftAwaitIRP(irp, _evt);
-	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
+	status = WskMinecraftSendV(AcceptSocket, test, 1);
 
-
+	/********************************/
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
 	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskDisconnect(
 		AcceptSocket,
@@ -236,7 +312,9 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	);
 	status = WskMinecraftAwaitIRP(irp, _evt);
 
+	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
+
 	((PWSK_PROVIDER_CONNECTION_DISPATCH)AcceptSocket->Dispatch)->WskCloseSocket(
 		AcceptSocket,
 		irp
@@ -246,7 +324,4 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	IoFreeIrp(irp);
 	ExFreePoolWithTag(_evt, 'enim');
 	return status;
-
 }
-
-//NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET sock, )

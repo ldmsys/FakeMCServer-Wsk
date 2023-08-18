@@ -30,7 +30,6 @@ UINT64 htonll(UINT64 value)
 }
 #endif
 
-#if 1
 NTSTATUS WskMinecraftIRPComp(PDEVICE_OBJECT unused, PIRP irp, PVOID context) {
     //__debugbreak();
     UNREFERENCED_PARAMETER(unused); UNREFERENCED_PARAMETER(irp);
@@ -47,18 +46,14 @@ NTSTATUS WskMinecraftAwaitIRP(PIRP irp, PRKEVENT _event) {
     if (!irp) return STATUS_UNSUCCESSFUL;
     return irp->IoStatus.Status;
 }
-#else
-// Usage: if (status == STATUS_PENDING) status = WskMinecraftAwaitIRP(irp);
-NTSTATUS WskMinecraftAwaitIRP(PIRP irp) {
-    KeWaitForSingleObject(irp->UserEvent, Executive, KernelMode, FALSE, NULL);
-    return &irp->IoStatus && irp->IoStatus.Status || STATUS_UNSUCCESSFUL;
-}
-#endif
 
 typedef struct _IOVEC {
     void* iov_base;
     size_t iov_len;
 } IOVEC, *PIOVEC;
+
+NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt);
+int NTAPI WskMinecraftRecv(PWSK_SOCKET socket, PVOID buf, size_t len, ULONG Flags);
 
 WSK_REGISTRATION WskMinecraftRegistration;
 PWSK_SOCKET WskMinecraftListeningSocket;
