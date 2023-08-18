@@ -179,6 +179,9 @@ NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	}
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
 
+	WskMinecraftSocketBrokerSocket = NULL;
+	KeSetEvent(WskMinecraftSocketBrokerEvent, 2, FALSE);
+
 	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskCloseSocket
 	(WskMinecraftListeningSocket, irp);
 
