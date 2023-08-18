@@ -82,8 +82,7 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 );
 
 PKEVENT WskMinecraftSocketBrokerEvent;
-int WskMinecraftSocketBrokerType;
-PWSK_SOCKET WskMinecraftSocketBrokerSocket;
+PWSK_SOCKET WskMinecraftSocketBrokerSocket = NULL;
 VOID WskMinecraftSocketBroker(PVOID ctx);
 
 const WSK_CLIENT_LISTEN_DISPATCH WskMinecraftClientListenDispatch = {
