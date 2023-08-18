@@ -1,7 +1,7 @@
 #include "main.h"
 //#include "main.tmh"
 // Reference: https://github.com/microsoft/Windows-driver-samples/blob/main/network/wsk/echosrv/wsksmple.c
-
+// Reference: https://github.com/wbenny/KSOCKET
 
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath) {
 	NTSTATUS status;
@@ -167,7 +167,7 @@ NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
 	// TODO: Clean-up 
 
-	__debugbreak();
+	//__debugbreak();
 	PKEVENT _evt;
 	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
 	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
