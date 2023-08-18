@@ -19,15 +19,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	wskClientNpi.ClientContext = NULL;
 	wskClientNpi.Dispatch = &WskMinecraftClientDispatch;
 
-	status = WskRegister(&wskClientNpi, &WskMinecraftRegistration);
+	WskMinecraftRegistration = ExAllocatePoolZero(NonPagedPool, sizeof(WSK_REGISTRATION), 'enim');
+	if (!WskMinecraftRegistration) return STATUS_INSUFFICIENT_RESOURCES;
+	status = WskRegister(&wskClientNpi, WskMinecraftRegistration);
 	if (!NT_SUCCESS(status)) {
 		return status;
 	}
 
-	status = WskCaptureProviderNPI(&WskMinecraftRegistration, WSK_INFINITE_WAIT, &wskProviderNpi);
+	status = WskCaptureProviderNPI(WskMinecraftRegistration, WSK_INFINITE_WAIT, &wskProviderNpi);
 
 	if (!NT_SUCCESS(status)) {
-		WskDeregister(&WskMinecraftRegistration);
+		WskDeregister(WskMinecraftRegistration);
 		return status;
 	}
 
@@ -97,6 +99,27 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 		return status;
 	}
 
+	// Set TCP_NODELAY to disable nagle algorithm
+	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
+	int yes = 1;
+
+	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskControlSocket(
+		WskMinecraftListeningSocket,
+		WskSetOption,
+		TCP_NODELAY,
+		IPPROTO_TCP,
+		sizeof(yes),
+		&yes,
+		0, NULL, NULL, irp
+	);
+
+	status = WskMinecraftAwaitIRP(irp, _evt);
+	if (!NT_SUCCESS(status)) {
+		return status;
+	}/**/
+
+
 	// Bind & Listen
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
@@ -140,23 +163,33 @@ VOID WskMinecraftSocketBroker(PVOID ctx) {
 }
 
 
-VOID NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
+NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
 	// TODO: Clean-up 
 
-	//KEVENT evt;
+	__debugbreak();
+	PKEVENT _evt;
+	_evt = ExAllocatePoolZero(NonPagedPool, sizeof(KEVENT), 'enim');
+	if (!_evt) return STATUS_INSUFFICIENT_RESOURCES;
+	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
+
 	PIRP irp = IoAllocateIrp(1, FALSE);
 	if (!irp) {
-		return; STATUS_INSUFFICIENT_RESOURCES;
+		return STATUS_INSUFFICIENT_RESOURCES;
 	}
-	//WskMinecraftPrepareAwaitIRP(irp, &evt);
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
 
 	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskCloseSocket
 	(WskMinecraftListeningSocket, irp);
 
-	//WskMinecraftAwaitIRP(irp, &evt);
-	WskDeregister(&WskMinecraftRegistration);
+	WskMinecraftAwaitIRP(irp, _evt);
+	WskReleaseProviderNPI(WskMinecraftRegistration);
+	WskDeregister(WskMinecraftRegistration);
+	IoFreeIrp(irp);
+	ExFreePoolWithTag(WskMinecraftRegistration, 'enim');
+	ExFreePoolWithTag(_evt, 'enim');
 
+	return STATUS_SUCCESS;
 }
 
 #pragma warning(disable: 4702)
@@ -290,6 +323,26 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	KeInitializeEvent(_evt, SynchronizationEvent, FALSE);
 	
 
+
+	int yes = 1;
+
+	WskMinecraftPrepareAwaitIRP(irp, _evt);
+	((PWSK_PROVIDER_LISTEN_DISPATCH)AcceptSocket->Dispatch)->WskControlSocket(
+		AcceptSocket,
+		WskSetOption,
+		TCP_NODELAY,
+		IPPROTO_TCP,
+		sizeof(yes),
+		&yes,
+		0, NULL, NULL, irp
+	);
+
+	status = WskMinecraftAwaitIRP(irp, _evt);
+	if (!NT_SUCCESS(status)) {
+		return status;
+	}
+	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
+
 	/********************************/
 	//__debugbreak();
 	/*char m[1024];
@@ -308,6 +361,7 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 	n = dn = mode = expected_packet_size = keepalivecounter = yebiopt = 0;
 	IOVEC vec[10];
 	while (TRUE) {
+		//__debugbreak();
 		if (yebiopt) {
 			PRINTF_DEBUG("Restoring from yebi! %d\n", yebiopt);
 			n = yebiopt;
@@ -343,7 +397,7 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 
 		memset(returnbuf, 0, MTU);
 		unsigned char packetID = buf[varintSize(buf)];
-		PRINTF_DEBUG("Packet done! %x %x %x %x %x (%d)\n", buf[0], buf[1], buf[2], buf[3], buf[4], varintSize(buf));
+		PRINTF_DEBUG("Packet done! %x %x %x %x %x (%d, packetID %d, mode %d)\n", buf[0], buf[1], buf[2], buf[3], buf[4], varintSize(buf), packetID, mode);
 		if (mode == 0) { // pre-handshaking
 			//int protocol = varintToint(buf + varintSize(buf) + 1);
 			mode = buf[expected_packet_size]; // new mode
@@ -353,11 +407,12 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 				PRINTF_DEBUG("Undefined behavior! %d %d\n", packetID, mode);
 				break;
 			}
+
 		}
 		else if (mode == 1) { // Ping Mode
 			PRINTF_DEBUG("Ping Mode!\n");
 			if (packetID == 0) { // MOTD Request
-				char* json = "{\"version\": {\"name\": \"ldmsys 1.12.2\", \"protocol\":340},\"players\":{\"max\":99999,\"online\": 0,\"sample\":[]},\"description\":{\"text\": \"§b§lFakeMCServer Test\"}}";
+				char* json = "{\"version\": {\"name\": \"ldmsys-wsk 1.12.2\", \"protocol\":340},\"players\":{\"max\":99999,\"online\": 0,\"sample\":[]},\"description\":{\"text\": \"\xc2\247b\xc2\247lFakeMCServer Test\"}}";
 				//char* packedJSON = (char*)malloc(strlen(json) + 6);
 				char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(json) + 6, 'enim');
 				if (!packedJSON) break;
@@ -378,6 +433,12 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 
 				WskMinecraftWriteV(AcceptSocket, vec, 3);
 				ExFreePoolWithTag(packedJSON, 'enim');
+			}
+			else if (packetID == 1) { // Ping Request
+				vec[0].iov_base = buf;
+				vec[0].iov_len = expected_packet_size + varintSize(buf);
+
+				WskMinecraftWriteV(AcceptSocket, vec, 1); // Send back the full packet
 			}
 		}
 		else if (mode == 2) {
@@ -408,8 +469,10 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 			WskMinecraftWriteV(AcceptSocket, vec, 3);
 			ExFreePoolWithTag(packedJSON, 'enim');
 		}
+		n = expected_packet_size = 0;
+		memset(&buf, 0, MTU);
 	}
-	
+	PRINTF_DEBUG("Disconnecting!\n");
 
 	/********************************/
 	WskMinecraftPrepareAwaitIRP(irp, _evt);

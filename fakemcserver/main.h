@@ -55,7 +55,7 @@ typedef struct _IOVEC {
 NTSTATUS NTAPI WskMinecraftSendV(PWSK_SOCKET socket, PIOVEC iov, int iovcnt);
 int NTAPI WskMinecraftRecv(PWSK_SOCKET socket, PVOID buf, size_t len, ULONG Flags);
 
-WSK_REGISTRATION WskMinecraftRegistration;
+PWSK_REGISTRATION WskMinecraftRegistration;
 PWSK_SOCKET WskMinecraftListeningSocket;
 WSK_PROVIDER_NPI wskProviderNpi;
 
@@ -64,7 +64,7 @@ SOCKADDR_IN6 ListenAddress = {AF_INET6,
 							  0, IN6ADDR_ANY_INIT, 0};
 
 
-VOID NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject);
+NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject);
 NTSTATUS NTAPI PacketHandler(PVOID ctx);
 NTSTATUS WSKAPI WskMinecraftAcceptEvent(
     _In_ PVOID SocketContext,
