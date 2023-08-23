@@ -1,6 +1,8 @@
 # FakeMCServer-WSK
+Stub MC Server that runs on your NT Kernel. Providing basic kick and MOTD behavior.
+
 ## Video in action
-https://youtu.be/dkCHKAsWinE
+[![.](https://i.ytimg.com/vi/dkCHKAsWinE/hqdefault.jpg)](https://youtu.be/dkCHKAsWinE)
 
 ## Features
  * Uses lesser RAM
