@@ -120,10 +120,79 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}/**/
 
 
+	// TODO: Fetch Registry Information
+	PHANDLE RegHandle = NULL;
+	PKEY_VALUE_PARTIAL_INFORMATION ReturnData;
+	UNICODE_STRING ValueName;
+	ReturnData = ExAllocatePoolZero(NonPagedPool, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), 'enim');
+	
+	__debugbreak();
+	do {
+		if (!RegistryPath || !ReturnData) break;
+
+		OBJECT_ATTRIBUTES RegOpenAttributes;
+		InitializeObjectAttributes(&RegOpenAttributes, RegistryPath, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+		RegHandle = ExAllocatePoolZero(NonPagedPool, sizeof(HANDLE), 'enim');
+		if (!RegHandle) break;
+
+		status = ZwOpenKey(RegHandle, KEY_READ, &RegOpenAttributes);
+		if (!NT_SUCCESS(status)) break;
+
+		ULONG ResultLen;
+
+		RtlInitUnicodeString(&ValueName, L"Port");
+		status = ZwQueryValueKey(*RegHandle, &ValueName, KeyValuePartialInformation, ReturnData, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), &ResultLen);
+		if (!NT_SUCCESS(status)) break;
+
+		if (ResultLen > 0 && ReturnData->Type == REG_DWORD && ReturnData->DataLength == sizeof(ULONG)) {
+			PORT = *((unsigned short*)(void*)ReturnData->Data);
+		}
+		RtlFillMemory(ReturnData, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), 0);
+
+		RtlInitUnicodeString(&ValueName, L"MotdJSON");
+		status = ZwQueryValueKey(*RegHandle, &ValueName, KeyValuePartialInformation, ReturnData, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), &ResultLen);
+		if (!NT_SUCCESS(status)) break;
+
+		if (ResultLen > 0 && ReturnData->Type == REG_BINARY && ReturnData->DataLength <= 32767) {
+			// No NULL-terminated string expected
+			motdJSON = ExAllocatePoolZero(NonPagedPool, ReturnData->DataLength + 1, 'enim');
+			memcpy(motdJSON, ReturnData->Data, ReturnData->DataLength);
+			motdJSON[ReturnData->DataLength] = '\0';
+		}
+
+		RtlInitUnicodeString(&ValueName, L"KickJSON");
+		status = ZwQueryValueKey(*RegHandle, &ValueName, KeyValuePartialInformation, ReturnData, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), &ResultLen);
+		if (!NT_SUCCESS(status)) break;
+
+		if (ResultLen > 0 && ReturnData->Type == REG_BINARY && ReturnData->DataLength <= 32767) {
+			// No NULL-terminated string expected
+			kickJSON = ExAllocatePoolZero(NonPagedPool, ReturnData->DataLength + 1, 'enim');
+			memcpy(kickJSON, ReturnData->Data, ReturnData->DataLength);
+			kickJSON[ReturnData->DataLength] = '\0';
+		}
+
+	} while (0);
+
+	if (RegHandle) {
+		ZwClose(RegHandle);
+		ExFreePoolWithTag(RegHandle, 'enim');
+	}
+
+	if (!motdJSON) motdJSON = defaultMotdJSON;
+	if (!kickJSON) kickJSON = defaultKickJSON;
+
+	status = STATUS_SUCCESS; // Since there is fallback, failing to fetch Registry isn't critical, huh?
+
 	// Bind & Listen
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
 	
+	if (!PORT) PORT = 25565;
+	SOCKADDR_IN6 ListenAddress = { AF_INET6,
+							  htons(PORT),
+							  0, IN6ADDR_ANY_INIT, 0 };
+
 	status = ((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskBind(
 		WskMinecraftListeningSocket, (PSOCKADDR)&ListenAddress, 0, irp
 	);
@@ -189,6 +258,8 @@ NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	WskReleaseProviderNPI(WskMinecraftRegistration);
 	WskDeregister(WskMinecraftRegistration);
 	IoFreeIrp(irp);
+	if (motdJSON != defaultMotdJSON) ExFreePoolWithTag(motdJSON, 'enim');
+	if (kickJSON != defaultKickJSON) ExFreePoolWithTag(kickJSON, 'enim');
 	ExFreePoolWithTag(WskMinecraftRegistration, 'enim');
 	ExFreePoolWithTag(_evt, 'enim');
 
@@ -417,16 +488,15 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 		else if (mode == 1) { // Ping Mode
 			PRINTF_DEBUG("Ping Mode!\n");
 			if (packetID == 0) { // MOTD Request
-				char* json = "{\"version\": {\"name\": \"ldmsys-wsk 1.12.2\", \"protocol\":340},\"players\":{\"max\":99999,\"online\": 0,\"sample\":[]},\"description\":{\"text\": \"\xc2\247b\xc2\247lFakeMCServer Test\"}}";
 				//char* packedJSON = (char*)malloc(strlen(json) + 6);
-				char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(json) + 6, 'enim');
+				char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(motdJSON) + 6, 'enim');
 				if (!packedJSON) break;
 				unsigned char _packetID = 0x00;
 
 				vec[1].iov_base = &_packetID;
 				vec[1].iov_len = 1;
 				vec[2].iov_base = packedJSON;
-				vec[2].iov_len = appendLengthvarint(json, strlen(json), packedJSON);
+				vec[2].iov_len = appendLengthvarint(motdJSON, strlen(motdJSON), packedJSON);
 
 				size_t payloadsize = 0;
 				for (int i = 1;i <= 2;i++) {
@@ -451,17 +521,15 @@ NTSTATUS NTAPI PacketHandler(PVOID ctx) {
 				PRINTF_DEBUG("Undefined behavior! %d %d\n", packetID, mode);
 				break;
 			}
-			char* json = "{\"text\": \"You are not white-listed on this server!\"}";
-
 			//char* packedJSON = (char*)malloc(strlen(json) + 6);
-			char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(json) + 6, 'enim');
+			char* packedJSON = ExAllocatePoolZero(NonPagedPool, strlen(kickJSON) + 6, 'enim');
 			if (!packedJSON) break;
 			unsigned char _packetID = 0x00;
 
 			vec[1].iov_base = &_packetID;
 			vec[1].iov_len = 1;
 			vec[2].iov_base = packedJSON;
-			vec[2].iov_len = appendLengthvarint(json, strlen(json), packedJSON);
+			vec[2].iov_len = appendLengthvarint(kickJSON, strlen(kickJSON), packedJSON);
 
 			size_t payloadsize = 0;
 			for (int i = 1;i < 3;i++) {

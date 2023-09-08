@@ -61,11 +61,6 @@ PWSK_REGISTRATION WskMinecraftRegistration;
 PWSK_SOCKET WskMinecraftListeningSocket;
 WSK_PROVIDER_NPI wskProviderNpi;
 
-SOCKADDR_IN6 ListenAddress = {AF_INET6,
-							  htons(25565),
-							  0, IN6ADDR_ANY_INIT, 0};
-
-
 NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject);
 NTSTATUS NTAPI PacketHandler(PVOID ctx);
 NTSTATUS WSKAPI WskMinecraftAcceptEvent(
@@ -99,6 +94,13 @@ const WSK_CLIENT_DISPATCH WskMinecraftClientDispatch = {
 #define CONTINUE_BIT 0x80
 #define KICKMODE 0x01
 #define MTU 1500
+
+unsigned short PORT = 0; // Indicates port has not set yet
+/*const */char* defaultMotdJSON = "{\"version\": {\"name\": \"ldmsys-wsk 1.12.2\", \"protocol\":340},\"players\":{\"max\":99999,\"online\": 0,\"sample\":[]},\"description\":{\"text\": \"\xc2\247b\xc2\247lFakeMCServer Test\"}}";
+/*const */char* defaultKickJSON = "{\"text\": \"You are not white-listed on this server!\"}";
+
+char* motdJSON = NULL; // Indicates port has not set yet
+char* kickJSON = NULL; // Indicates port has not set yet
 
 size_t varintSize(unsigned char varint[4]) {
     int i;
@@ -144,5 +146,4 @@ size_t appendLengthvarint(char* string, size_t length, char* mcstring) {
     return headerlen + length;
 }
 #define PRINTF_DEBUG DbgPrint
-#define MTU 1500
 #pragma endregion("Real Minecraft")
