@@ -120,13 +120,13 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}/**/
 
 
-	// TODO: Fetch Registry Information
+	// Fetch Registry Information
 	PHANDLE RegHandle = NULL;
 	PKEY_VALUE_PARTIAL_INFORMATION ReturnData;
 	UNICODE_STRING ValueName;
 	ReturnData = ExAllocatePoolZero(NonPagedPool, 32767 + sizeof(KEY_VALUE_PARTIAL_INFORMATION), 'enim');
 	
-	__debugbreak();
+	//__debugbreak();
 	do {
 		if (!RegistryPath || !ReturnData) break;
 
@@ -184,6 +184,26 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 	status = STATUS_SUCCESS; // Since there is fallback, failing to fetch Registry isn't critical, huh?
 
+	// TODO: Create Ioctl Device
+	UNICODE_STRING IoctlDeviceName, IoctlAliasName;
+	RtlInitUnicodeString(&IoctlDeviceName, L"\\Device\\MCServer");
+	RtlInitUnicodeString(&IoctlAliasName, L"\\DosDevices\\MCServer");
+
+	status = IoCreateDevice(DriverObject, 0, &IoctlDeviceName, FILE_DEVICE_UNKNOWN, 0, TRUE, &IoctlDeviceObject);
+	if (!NT_SUCCESS(status) || !IoctlDeviceObject) {
+		return status;
+	}
+
+	status = IoCreateSymbolicLink(&IoctlAliasName, &IoctlDeviceName);
+	if (!NT_SUCCESS(status)) {
+		IoDeleteDevice(IoctlDeviceObject);
+		return status;
+	}
+
+	DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = IoctlHandler;
+	DriverObject->MajorFunction[IRP_MJ_CREATE] = IoctlCreateCloseHandler;
+	DriverObject->MajorFunction[IRP_MJ_CLOSE] = IoctlCreateCloseHandler;
+
 	// Bind & Listen
 	IoReuseIrp(irp, STATUS_UNSUCCESSFUL);
 	WskMinecraftPrepareAwaitIRP(irp, _evt);
@@ -231,6 +251,70 @@ VOID WskMinecraftSocketBroker(PVOID ctx) {
 	}
 }
 
+NTSTATUS NTAPI IoctlCreateCloseHandler(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP irp) {
+#ifndef NDEBUG
+	__debugbreak();
+#endif
+	UNREFERENCED_PARAMETER(DeviceObject);
+	irp->IoStatus.Status = STATUS_SUCCESS;
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS NTAPI IoctlHandler(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIRP irp) {
+#ifndef NDEBUG
+	__debugbreak();
+#endif
+	NTSTATUS returnStatus = STATUS_SUCCESS;
+	UNREFERENCED_PARAMETER(DeviceObject);
+	PIO_STACK_LOCATION stackLoc;
+	ULONG IoctlCode;
+
+	if (!irp) return STATUS_INVALID_PARAMETER;
+
+	stackLoc = IoGetCurrentIrpStackLocation(irp);
+	if (!stackLoc || stackLoc->MajorFunction != IRP_MJ_DEVICE_CONTROL) {
+		irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+		IoCompleteRequest(irp, IO_NO_INCREMENT);
+		return STATUS_UNSUCCESSFUL;
+	}
+
+	IoctlCode = stackLoc->Parameters.DeviceIoControl.IoControlCode;
+
+	switch (IoctlCode) {
+	case IOCTL_FAKEMCSERVER_UPDATE_PORT:
+		returnStatus = STATUS_NOT_IMPLEMENTED;
+		break;
+	case IOCTL_FAKEMCSERVER_UPDATE_MOTD:
+		if (stackLoc->Parameters.DeviceIoControl.InputBufferLength < 32767) {
+			if (motdJSON != defaultMotdJSON) ExFreePoolWithTag(motdJSON, 'enim');
+
+			motdJSON = ExAllocatePoolZero(NonPagedPool, stackLoc->Parameters.DeviceIoControl.InputBufferLength + 1, 'enim');
+			memcpy(motdJSON, irp->UserBuffer, stackLoc->Parameters.DeviceIoControl.InputBufferLength);
+			motdJSON[stackLoc->Parameters.DeviceIoControl.InputBufferLength] = '\0';
+
+			irp->IoStatus.Information = (ULONG_PTR)motdJSON; // debugging purposes only
+		}
+		break;
+	case IOCTL_FAKEMCSERVER_UPDATE_KICK:
+		if (stackLoc->Parameters.DeviceIoControl.InputBufferLength < 32767) {
+			if (kickJSON != defaultKickJSON) ExFreePoolWithTag(kickJSON, 'enim');
+
+			kickJSON = ExAllocatePoolZero(NonPagedPool, stackLoc->Parameters.DeviceIoControl.InputBufferLength + 1, 'enim');
+			memcpy(kickJSON, irp->UserBuffer, stackLoc->Parameters.DeviceIoControl.InputBufferLength);
+			kickJSON[stackLoc->Parameters.DeviceIoControl.InputBufferLength] = '\0';
+
+			irp->IoStatus.Information = (ULONG_PTR)kickJSON; // debugging purposes only
+		}
+		break;
+	default:
+		returnStatus = STATUS_INVALID_PARAMETER;
+	}
+
+	irp->IoStatus.Status = returnStatus;
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
+}
 
 NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
@@ -254,6 +338,11 @@ NTSTATUS NTAPI UnloadHandler(_In_ PDRIVER_OBJECT DriverObject) {
 	((PWSK_PROVIDER_LISTEN_DISPATCH)WskMinecraftListeningSocket->Dispatch)->WskCloseSocket
 	(WskMinecraftListeningSocket, irp);
 
+	UNICODE_STRING IoctlAliasName;
+	RtlInitUnicodeString(&IoctlAliasName, L"\\DosDevices\\MCServer");
+	IoDeleteSymbolicLink(&IoctlAliasName);
+	IoDeleteDevice(IoctlDeviceObject);
+
 	WskMinecraftAwaitIRP(irp, _evt);
 	WskReleaseProviderNPI(WskMinecraftRegistration);
 	WskDeregister(WskMinecraftRegistration);
@@ -276,8 +365,6 @@ NTSTATUS WSKAPI WskMinecraftAcceptEvent(
 	_Outptr_result_maybenull_ PVOID* AcceptSocketContext,
 	_Outptr_result_maybenull_ CONST WSK_CLIENT_CONNECTION_DISPATCH** AcceptSocketDispatch
 ) {
-	//KeBugCheckEx(0xC8C8C8C8, 0, 0, 0, 0);
-	//return STATUS_UNSUCCESSFUL;
 	SocketContext, Flags, LocalAddress, RemoteAddress, AcceptSocket, AcceptSocketContext, AcceptSocketDispatch;
 
 	UNREFERENCED_PARAMETER(SocketContext); // Since we are passed it as NULL
